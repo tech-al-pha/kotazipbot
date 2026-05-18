@@ -2,10 +2,12 @@ import json
 import os
 import zipfile
 import tempfile
+import threading
 from dotenv import load_dotenv
 import telebot
 from loguru import logger
 from groq import Groq
+from flask import Flask
 
 load_dotenv()
 
@@ -18,12 +20,28 @@ if not GROQ_API_KEY:
     raise RuntimeError("GROQ_API_KEY is missing. Add it to the .env file.")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 bot = telebot.TeleBot(TOKEN)
+
 logger.add("bot.log", rotation="10 MB", retention="7 days", backtrace=True, diagnose=True)
 logger.info("🚀 KotaZipBot started...")
 
+# ─── Flask App (Cron Job Ping ke liye) ──────────────────────
+flask_app = Flask(__name__)
 
+@flask_app.route("/ping")
+def ping():
+    return "🟢 Bot alive!", 200
+
+@flask_app.route("/")
+def home():
+    return "🤖 KotaZipBot is running!", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port)
+
+
+# ─── Helper Functions ────────────────────────────────────────
 def _safe_send_message(chat_id, text, parse_mode="HTML"):
     try:
         bot.send_message(chat_id, text, parse_mode=parse_mode, disable_web_page_preview=True)
@@ -77,6 +95,7 @@ File Content:
         return f"⚠️ AI extraction failed: {str(e)}"
 
 
+# ─── Bot Commands ────────────────────────────────────────────
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(
@@ -116,6 +135,7 @@ def help_cmd(message):
     )
 
 
+# ─── Document Handler ─────────────────────────────────────────
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
     try:
@@ -139,7 +159,7 @@ def handle_document(message):
             with open(local_path, "wb") as f:
                 f.write(downloaded_file)
 
-            # ─── JSON ───────────────────────────────────────────
+            # ─── JSON ─────────────────────────────────────────
             if file_name.lower().endswith(".json"):
                 with open(local_path, "r", encoding="utf-8", errors="replace") as f:
                     try:
@@ -155,7 +175,7 @@ def handle_document(message):
                     f"✅ <b>Extracted Info:</b>\n\n{result}"
                 )
 
-            # ─── TXT ────────────────────────────────────────────
+            # ─── TXT ──────────────────────────────────────────
             elif file_name.lower().endswith(".txt"):
                 with open(local_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
@@ -165,7 +185,7 @@ def handle_document(message):
                     f"✅ <b>Extracted Info:</b>\n\n{result}"
                 )
 
-            # ─── ZIP ────────────────────────────────────────────
+            # ─── ZIP ──────────────────────────────────────────
             elif file_name.lower().endswith(".zip"):
                 with zipfile.ZipFile(local_path, "r") as zip_ref:
                     members = zip_ref.namelist()
@@ -217,7 +237,7 @@ def handle_document(message):
                             parse_mode="HTML",
                         )
 
-            # ─── Unsupported ─────────────────────────────────────
+            # ─── Unsupported ───────────────────────────────────
             else:
                 bot.reply_to(
                     message,
@@ -233,6 +253,7 @@ def handle_document(message):
         bot.reply_to(message, f"❌ <b>Error:</b> {str(e)}", parse_mode="HTML")
 
 
+# ─── Text Message Handler ─────────────────────────────────────
 @bot.message_handler(func=lambda message: True)
 def handle_text(message):
     bot.reply_to(
@@ -243,6 +264,14 @@ def handle_text(message):
     )
 
 
+# ─── Main ─────────────────────────────────────────────────────
 if __name__ == "__main__":
-    logger.info("Bot polling shuru...")
+    # Flask alag thread mein chalao (cron ping ke liye)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info("✅ Flask server started for cron ping!")
+
+    # Bot polling shuru
+    logger.info("🤖 Bot polling shuru...")
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
