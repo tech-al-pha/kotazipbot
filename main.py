@@ -5,20 +5,19 @@ import tempfile
 from dotenv import load_dotenv
 import telebot
 from loguru import logger
-import google.generativeai as genai
+from groq import Groq
 
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is missing. Add it to the .env file.")
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is missing. Add it to the .env file.")
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY is missing. Add it to the .env file.")
 
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 bot = telebot.TeleBot(TOKEN)
 logger.add("bot.log", rotation="10 MB", retention="7 days", backtrace=True, diagnose=True)
@@ -26,45 +25,56 @@ logger.info("🚀 KotaZipBot started...")
 
 
 def _safe_send_message(chat_id, text, parse_mode="HTML"):
-    bot.send_message(chat_id, text, parse_mode=parse_mode, disable_web_page_preview=True)
+    try:
+        bot.send_message(chat_id, text, parse_mode=parse_mode, disable_web_page_preview=True)
+    except Exception:
+        bot.send_message(chat_id, text, parse_mode=None, disable_web_page_preview=True)
 
 
 def _send_long_message(chat_id, text, parse_mode="HTML"):
     chunk_size = 3500
     for start in range(0, len(text), chunk_size):
         chunk = text[start:start + chunk_size]
-        bot.send_message(chat_id, chunk, parse_mode=parse_mode, disable_web_page_preview=True)
+        try:
+            bot.send_message(chat_id, chunk, parse_mode=parse_mode, disable_web_page_preview=True)
+        except Exception:
+            bot.send_message(chat_id, chunk, parse_mode=None, disable_web_page_preview=True)
 
 
-def extract_with_gemini(content: str, file_name: str) -> str:
-    """Gemini AI se content extract karao nicely formatted"""
-    prompt = f"""
-Tu ek course extractor hai. Neeche ek file ka content diya gaya hai jiska naam hai: "{file_name}"
+def extract_with_groq(content: str, file_name: str) -> str:
+    """Groq AI se content extract karao nicely formatted"""
+    prompt = f"""Tu ek expert course extractor hai. Neeche ek file ka content diya gaya hai jiska naam hai: "{file_name}"
 
 Tera kaam hai is content ko analyze karna aur clearly extract karna:
 
 1. 📚 Course/Batch ka naam
 2. 🏫 Platform detect karo (AppX, AppsLixt, Adda247, CipherSchools, CP, PW, Unacademy, etc.)
-3. 📖 Subjects / Topics list
-4. 🔗 Koi bhi links (video, PDF, notes, etc.)
+3. 📖 Subjects / Topics list (sab likho)
+4. 🔗 Koi bhi links (video, PDF, notes, drive, etc.)
 5. 👨‍🏫 Teacher/Instructor ka naam (agar ho)
 6. 📅 Duration ya Schedule (agar ho)
-7. 📝 Koi bhi important info
+7. 📝 Koi bhi important extra info
 
-Format: Clean aur readable Telegram HTML format mein do.
-Bold headings ke liye <b>text</b> use karo.
-Agar koi cheez nahi milti to skip karo.
-Sirf relevant info do, raw data mat do.
+Rules:
+- Clean aur readable format mein do
+- Agar koi cheez nahi milti to us point ko skip karo
+- Raw JSON ya technical data mat dikhao
+- Sirf useful information extract karo
+- Hinglish mein answer de sakta hai
 
 File Content:
-{content[:8000]}
-"""
+{content[:6000]}"""
+
     try:
-        response = gemini_model.generate_content(prompt)
-        return response.text
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1500,
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Gemini error: {e}")
-        return f"⚠️ AI extraction failed: {str(e)}\n\nRaw content neeche hai:"
+        logger.error(f"Groq error: {e}")
+        return f"⚠️ AI extraction failed: {str(e)}"
 
 
 @bot.message_handler(commands=["start"])
@@ -72,10 +82,14 @@ def start(message):
     bot.send_message(
         message.chat.id,
         "🔥 <b>Welcome to KotaZipBot</b>\n\n"
-        "Mujhe koi bhi file bhejo — JSON, TXT, ZIP, PDF\n"
-        "Main AI se extract karke bataunga:\n\n"
+        "Mujhe koi bhi file bhejo aur main AI se extract karke saari info dunga!\n\n"
+        "<b>Supported formats:</b>\n"
+        "✅ .json — Course JSON files\n"
+        "✅ .txt — Text files\n"
+        "✅ .zip — ZIP archives\n\n"
+        "<b>Main extract karunga:</b>\n"
         "📚 Course name\n"
-        "🏫 Platform\n"
+        "🏫 Platform (AppX, Adda, CP, PW...)\n"
         "📖 Subjects & Topics\n"
         "🔗 Links\n"
         "👨‍🏫 Teacher info\n\n"
@@ -88,12 +102,15 @@ def start(message):
 def help_cmd(message):
     bot.send_message(
         message.chat.id,
-        "📌 <b>Supported Formats:</b>\n\n"
+        "📌 <b>Help Menu</b>\n\n"
+        "<b>Supported Formats:</b>\n"
         "✅ .json — Course JSON files\n"
         "✅ .txt — Text files\n"
-        "✅ .zip — ZIP archives (JSON/TXT andar)\n"
-        "✅ .pdf — PDF documents\n\n"
-        "🤖 Gemini AI se smart extraction hoti hai!\n"
+        "✅ .zip — ZIP archives (JSON/TXT andar)\n\n"
+        "<b>Commands:</b>\n"
+        "/start — Bot shuru karo\n"
+        "/help — Ye menu dekho\n\n"
+        "🤖 Groq AI (LLaMA 70B) se smart extraction hoti hai!\n"
         "Koi bhi platform ka data ho — AppX, Adda, CP, PW — sab samjhega!",
         parse_mode="HTML",
     )
@@ -110,7 +127,7 @@ def handle_document(message):
             message,
             f"📥 <b>File received:</b> {file_name}\n"
             f"📦 Size: {file_size} bytes\n\n"
-            f"🤖 AI se extract kar raha hoon...",
+            f"🤖 AI se extract kar raha hoon... thoda wait karo!",
             parse_mode="HTML",
         )
 
@@ -124,44 +141,42 @@ def handle_document(message):
 
             # ─── JSON ───────────────────────────────────────────
             if file_name.lower().endswith(".json"):
-                with open(local_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                raw_text = json.dumps(data, indent=2, ensure_ascii=False)
-                result = extract_with_gemini(raw_text, file_name)
-                _safe_send_message(message.chat.id, f"✅ <b>Extracted Info:</b>\n\n{result}")
+                with open(local_path, "r", encoding="utf-8", errors="replace") as f:
+                    try:
+                        data = json.load(f)
+                        raw_text = json.dumps(data, indent=2, ensure_ascii=False)
+                    except json.JSONDecodeError:
+                        f.seek(0)
+                        raw_text = f.read()
+
+                result = extract_with_groq(raw_text, file_name)
+                _safe_send_message(
+                    message.chat.id,
+                    f"✅ <b>Extracted Info:</b>\n\n{result}"
+                )
 
             # ─── TXT ────────────────────────────────────────────
             elif file_name.lower().endswith(".txt"):
                 with open(local_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
-                result = extract_with_gemini(content, file_name)
-                _safe_send_message(message.chat.id, f"✅ <b>Extracted Info:</b>\n\n{result}")
-
-            # ─── PDF ────────────────────────────────────────────
-            elif file_name.lower().endswith(".pdf"):
-                try:
-                    import pdfplumber
-                    with pdfplumber.open(local_path) as pdf:
-                        text = ""
-                        for page in pdf.pages[:10]:  # max 10 pages
-                            text += page.extract_text() or ""
-                    if text.strip():
-                        result = extract_with_gemini(text, file_name)
-                        _safe_send_message(message.chat.id, f"✅ <b>Extracted Info:</b>\n\n{result}")
-                    else:
-                        bot.reply_to(message, "⚠️ PDF mein readable text nahi mila (scanned image ho sakti hai).")
-                except ImportError:
-                    bot.reply_to(message, "⚠️ PDF support ke liye <code>pdfplumber</code> install karo:\n<code>pip install pdfplumber</code>", parse_mode="HTML")
+                result = extract_with_groq(content, file_name)
+                _safe_send_message(
+                    message.chat.id,
+                    f"✅ <b>Extracted Info:</b>\n\n{result}"
+                )
 
             # ─── ZIP ────────────────────────────────────────────
             elif file_name.lower().endswith(".zip"):
                 with zipfile.ZipFile(local_path, "r") as zip_ref:
                     members = zip_ref.namelist()
+
+                    file_list = "\n".join(f"• {m}" for m in members[:20])
+                    if len(members) > 20:
+                        file_list += f"\n... aur {len(members) - 20} aur files"
+
                     bot.reply_to(
                         message,
-                        f"🗜️ ZIP mein <b>{len(members)}</b> files hain:\n" +
-                        "\n".join(f"• {m}" for m in members[:20]) +
-                        ("\n..." if len(members) > 20 else ""),
+                        f"🗜️ ZIP mein <b>{len(members)}</b> files hain:\n\n{file_list}",
                         parse_mode="HTML",
                     )
 
@@ -169,7 +184,7 @@ def handle_document(message):
                     for member in members:
                         if member.endswith("/"):
                             continue
-                        if member.lower().endswith((".json", ".txt", ".pdf")):
+                        if member.lower().endswith((".json", ".txt")):
                             try:
                                 with zip_ref.open(member) as f:
                                     raw = f.read()
@@ -185,7 +200,7 @@ def handle_document(message):
                                     except json.JSONDecodeError:
                                         pass
 
-                                result = extract_with_gemini(text, member)
+                                result = extract_with_groq(text, member)
                                 _safe_send_message(
                                     message.chat.id,
                                     f"📄 <b>{member}</b>\n\n{result}"
@@ -198,14 +213,15 @@ def handle_document(message):
                     if processed == 0:
                         bot.send_message(
                             message.chat.id,
-                            "✅ ZIP process hua, lekin koi JSON/TXT/PDF file nahi mili andar.",
+                            "✅ ZIP process hua, lekin koi JSON/TXT file nahi mili andar.",
                             parse_mode="HTML",
                         )
 
+            # ─── Unsupported ─────────────────────────────────────
             else:
                 bot.reply_to(
                     message,
-                    "⚠️ Abhi <b>.json, .txt, .zip, .pdf</b> support karta hoon.\n"
+                    "⚠️ Abhi <b>.json, .txt, .zip</b> support karta hoon.\n"
                     "Koi aur format chahiye? Batao!",
                     parse_mode="HTML"
                 )
@@ -215,6 +231,16 @@ def handle_document(message):
     except Exception as e:
         logger.exception("Failed to process document")
         bot.reply_to(message, f"❌ <b>Error:</b> {str(e)}", parse_mode="HTML")
+
+
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    bot.reply_to(
+        message,
+        "📁 Bhai file bhejo — JSON, TXT, ya ZIP!\n"
+        "Text se kaam nahi chalega 😄",
+        parse_mode="HTML"
+    )
 
 
 if __name__ == "__main__":
