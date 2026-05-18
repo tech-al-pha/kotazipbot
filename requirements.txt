@@ -1,5 +1,4 @@
 pyTelegramBotAPI
 loguru
 python-dotenv
-google-generativeai
-pdfplumber
+groq
